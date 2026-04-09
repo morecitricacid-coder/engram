@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 126 126" width="126" height="126">
+  <defs>
+    <filter id="glow-e" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      @keyframes pulse-e { 0%,100%{opacity:1} 50%{opacity:.75} }
+      .node { animation: pulse-e 3s ease-in-out infinite; }
+    </style>
+  </defs>
+  <g class="node" filter="url(#glow-e)">
+    <!-- Row 0: [0,0,0,0,1,0,0,0,0] -->
+    <rect x="56"  y="0"   width="14" height="14" fill="#a855f7"/>
+    <!-- Row 1: [0,0,0,1,1,1,0,0,0] -->
+    <rect x="42"  y="14"  width="42" height="14" fill="#a855f7"/>
+    <!-- Row 2: [0,1,1,1,2,1,1,1,0] -->
+    <rect x="14"  y="28"  width="42" height="14" fill="#a855f7"/>
+    <rect x="56"  y="28"  width="14" height="14" fill="#22d3ee"/>
+    <rect x="70"  y="28"  width="42" height="14" fill="#a855f7"/>
+    <!-- Row 3: [0,1,2,2,2,2,2,1,0] -->
+    <rect x="14"  y="42"  width="14" height="14" fill="#a855f7"/>
+    <rect x="28"  y="42"  width="70" height="14" fill="#22d3ee"/>
+    <rect x="98"  y="42"  width="14" height="14" fill="#a855f7"/>
+    <!-- Row 4: [1,1,2,2,2,2,2,1,1] -->
+    <rect x="0"   y="56"  width="28" height="14" fill="#a855f7"/>
+    <rect x="28"  y="56"  width="70" height="14" fill="#22d3ee"/>
+    <rect x="98"  y="56"  width="28" height="14" fill="#a855f7"/>
+    <!-- Row 5: [0,1,2,2,2,2,2,1,0] -->
+    <rect x="14"  y="70"  width="14" height="14" fill="#a855f7"/>
+    <rect x="28"  y="70"  width="70" height="14" fill="#22d3ee"/>
+    <rect x="98"  y="70"  width="14" height="14" fill="#a855f7"/>
+    <!-- Row 6: [0,1,1,1,2,1,1,1,0] -->
+    <rect x="14"  y="84"  width="42" height="14" fill="#a855f7"/>
+    <rect x="56"  y="84"  width="14" height="14" fill="#22d3ee"/>
+    <rect x="70"  y="84"  width="42" height="14" fill="#a855f7"/>
+    <!-- Row 7: [0,0,0,1,1,1,0,0,0] -->
+    <rect x="42"  y="98"  width="42" height="14" fill="#a855f7"/>
+    <!-- Row 8: [0,0,0,0,1,0,0,0,0] -->
+    <rect x="56"  y="112" width="14" height="14" fill="#a855f7"/>
+  </g>
+</svg>

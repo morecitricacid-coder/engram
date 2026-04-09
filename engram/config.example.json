@@ -1,0 +1,43 @@
+{
+  "_comment": "Engram — episodic memory config. Copy to config.json and customize.",
+
+  "db_path": "~/.engram/memory.db",
+  "transcript_dir": "~/.engram/transcripts",
+  "api_key_file": "~/.engram/api-key",
+
+  "parser": {
+    "method": "haiku",
+    "fallback": "regex",
+    "haiku_model": "claude-haiku-4-5-20251001",
+    "timeout_seconds": 10,
+    "max_entities_per_message": 8
+  },
+
+  "surfacing": {
+    "max_recalls_per_message": 5,
+    "max_sessions_per_entity": 5,
+    "max_snippet_length": 120,
+    "enabled": true
+  },
+
+  "negative_entities": [
+    "thinking", "question", "thing", "sure", "okay", "yes", "no",
+    "good", "bad", "right", "wrong", "interesting", "important",
+    "something", "anything", "everything", "nothing",
+    "recommendation", "suggestion", "idea", "approach",
+    "comparison", "difference", "evaluation", "concern",
+    "review", "update", "execution", "documentation", "decision",
+    "workflow", "process", "implementation", "configuration",
+    "issue", "problem", "error", "fix", "change", "result", "output"
+  ],
+
+  "known_entities": [
+    "ADD YOUR PROJECT NAMES HERE",
+    "ADD YOUR TOOL NAMES HERE",
+    "ADD YOUR TEAM MEMBERS HERE"
+  ],
+
+  "s1_links": {},
+
+  "aliases": {}
+}
