@@ -45,6 +45,7 @@ Engram fires (invisible, <1s):
 
   [MEMORY RECALL]
   - "fenix" -- 12 prior session(s)
+    [def: Real-time data ingestion pipeline with streaming and batch modes]
     > 2026-03-15: built Fenix, a real-time data ingestion pipeline
     > 2026-03-22: Fenix v2 added streaming support, broke the batch endpoint
     > 2026-04-01: fixed Fenix memory leak in the connection pool
