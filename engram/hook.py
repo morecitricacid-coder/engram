@@ -48,9 +48,11 @@ def get_session_id(data: dict) -> str:
     return f"session-{date.today().isoformat()}-{os.getpid()}"
 
 
-def _find_entity_snippet(text: str, entity: str, max_len: int = 200,
+def _find_entity_snippet(text: str, entity: str, max_len: int = None,
                          config: dict = None) -> str:
     """Find the sentence(s) most relevant to an entity."""
+    if max_len is None:
+        max_len = (config or {}).get("surfacing", {}).get("max_snippet_length", 300)
     sentences = re.split(r'(?<=[.!?\n])\s+', text.strip())
     if len(sentences) <= 1:
         return text[:max_len]
@@ -208,6 +210,78 @@ def main():
                     surfaced_entities.append(line.split('"')[1])
             if surfaced_entities:
                 update_last_surfaced(conn, session_id, surfaced_entities)
+
+        # --- Limen: Rule content injection ---
+        rule_triggers = config.get("rule_triggers", {})
+        if rule_triggers:
+            entity_lower_set = {e.lower() for e in entities}
+            prompt_lower = prompt.lower()
+            rules_dir = os.path.expanduser(
+                config.get("rules_dir", "~/.claude/rules")
+            )
+            triggered_rules = []
+
+            for rule_file, keywords in rule_triggers.items():
+                for kw in keywords:
+                    kw_lower = kw.lower()
+                    matched = (
+                        kw_lower in entity_lower_set
+                        or kw_lower in prompt_lower
+                        or (
+                            len(kw_lower.split()) == 1
+                            and re.search(
+                                r'\b' + re.escape(kw_lower) + r'\b',
+                                prompt_lower,
+                            )
+                        )
+                    )
+                    if matched:
+                        ref_key = f"rule:{rule_file}"
+                        already = conn.execute(
+                            "SELECT 1 FROM last_surfaced "
+                            "WHERE session_id=? AND entity=?",
+                            (session_id, ref_key),
+                        ).fetchone()
+                        if not already:
+                            rule_path = os.path.join(rules_dir, rule_file)
+                            rule_content = None
+                            if os.path.exists(rule_path):
+                                try:
+                                    raw = open(rule_path).read()
+                                    rule_content = (
+                                        _strix_light(raw)
+                                        if _strix_light
+                                        else raw
+                                    )
+                                except Exception:
+                                    pass
+                            triggered_rules.append(
+                                (rule_file, kw, rule_content)
+                            )
+                            conn.execute(
+                                "INSERT OR REPLACE INTO last_surfaced "
+                                "(session_id, entity, surfaced_at, "
+                                "message_index) "
+                                "VALUES (?, ?, datetime('now'), 0)",
+                                (session_id, ref_key),
+                            )
+                            conn.commit()
+                        break
+                if len(triggered_rules) >= 2:
+                    break
+
+            for rule_file, keyword, content in triggered_rules:
+                if content:
+                    block = (
+                        f"[RULE: {rule_file} — triggered by '{keyword}']\n"
+                        f"{content}\n[/RULE]"
+                    )
+                else:
+                    block = (
+                        f"[CONTEXT: Read {rules_dir}/{rule_file}"
+                        f" — triggered by '{keyword}']"
+                    )
+                output = f"{output}\n{block}" if output else block
 
         conn.close()
 

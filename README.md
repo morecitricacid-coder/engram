@@ -7,7 +7,7 @@
 *One shared brain across every model.*
 
 [![Python](https://img.shields.io/badge/python-3.10+-a855f7?style=flat-square&logo=python&logoColor=white&labelColor=0d1117)](https://python.org)
-[![Version](https://img.shields.io/badge/version-v0.2.0-a855f7?style=flat-square&labelColor=0d1117)](https://github.com/morecitricacid-coder/engram/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.0-a855f7?style=flat-square&labelColor=0d1117)](https://github.com/morecitricacid-coder/engram/releases)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-22d3ee?style=flat-square&labelColor=0d1117)]()
 [![Cost](https://img.shields.io/badge/cost-%7E%243%2Fyear-22d3ee?style=flat-square&labelColor=0d1117)]()
 [![License](https://img.shields.io/badge/license-MIT-a855f7?style=flat-square&labelColor=0d1117)](LICENSE)
@@ -348,6 +348,69 @@ When Strix is installed, Engram gains:
 - **`archive` command** — full conversation transcripts compressed for deep recall
 
 Engram works perfectly without Strix. All compression features are optional imports that degrade gracefully.
+
+---
+
+## Progressive Rule Loading (Limen)
+
+Engram can inject rule files into your assistant's context on demand — only when relevant keywords appear in your message. Instead of loading every project rule every session, you define triggers that load specific files only when you're actually working with that topic.
+
+### How It Works
+
+```
+You type: "Let's deploy the API to production"
+
+Engram detects "deploy" in your message
+  → matches rule_triggers: "deploy-checklist.md" → ["deploy", "production"]
+  → reads ~/.claude/rules/deploy-checklist.md
+  → optionally compresses with Strix light mode
+  → injects into context:
+
+[RULE: deploy-checklist.md — triggered by 'deploy']
+# Deploy Checklist
+1. Run test suite ...
+2. Check migrations ...
+[/RULE]
+```
+
+Your assistant sees the full rule content **before it responds** — no manual file reads needed.
+
+### Configuration
+
+Add `rules_dir` and `rule_triggers` to your `config.json`:
+
+```json
+{
+  "rules_dir": "~/.claude/rules",
+  "rule_triggers": {
+    "deploy-checklist.md": ["deploy", "production", "release"],
+    "database-migrations.md": ["migration", "schema change", "alembic"],
+    "security-review.md": ["auth", "credentials", "secrets"]
+  }
+}
+```
+
+Each key is a filename in `rules_dir`. Each value is a list of keywords that trigger loading that file.
+
+### Behavior
+
+- **Match logic:** keyword in extracted entities OR keyword in raw prompt (word-boundary for single words)
+- **Once per session:** each rule fires at most once per session (tracked via `last_surfaced`)
+- **Max 2 rules per message:** prevents context flooding
+- **Strix compression:** if [Strix](https://github.com/morecitricacid-coder/strix) is installed, rule content is automatically compressed before injection
+- **Graceful fallback:** if the rule file doesn't exist, outputs a `[CONTEXT: Read ...]` hint instead
+
+### The Three Layers
+
+Engram's progressive loading model has three reliability layers:
+
+| Layer | Mechanism | Failure mode |
+|-------|-----------|--------------|
+| **L1: Index** | A compact index file is always loaded with short inline summaries | Can't fail — always in context |
+| **L2: Auto-inject** | Engram detects keywords → injects full rule content | Keyword not in prompt text |
+| **L3: Manual read** | Assistant reads the file directly via the index routing table | Assistant doesn't check |
+
+Any two of three is sufficient. L1 alone prevents the worst mistakes. L2 provides full context automatically.
 
 ---
 

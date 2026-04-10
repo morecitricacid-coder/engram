@@ -39,5 +39,14 @@
 
   "s1_links": {},
 
-  "aliases": {}
+  "aliases": {},
+
+  "definitions": {},
+
+  "rules_dir": "~/.claude/rules",
+
+  "rule_triggers": {
+    "deploy-checklist.md": ["deploy", "production", "release"],
+    "database-migrations.md": ["migration", "schema change", "alembic"]
+  }
 }

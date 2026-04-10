@@ -9,8 +9,8 @@ import math
 import sqlite3
 from datetime import datetime
 
-MAX_SESSIONS_PER_ENTITY = 5
-MAX_ENTITIES_PER_RECALL = 5
+MAX_SESSIONS_PER_ENTITY = 10
+MAX_ENTITIES_PER_RECALL = 10
 
 
 def _cooccurrence_score(conn, entity, current_entities):

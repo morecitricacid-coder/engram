@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GOR Episodic Memory — /recall command handler.
+Engram — /recall command handler.
 
 Called by Claude (Sonnet/Opus) when user types /recall.
 Reads last surfaced entities from DB, applies feedback.
