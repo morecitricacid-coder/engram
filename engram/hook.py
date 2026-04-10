@@ -160,9 +160,17 @@ def main():
             conn.close()
             return
 
+        # Compress snippets with Strix light mode (deterministic, <1ms, no LLM)
+        # Snippets are stored compressed — every recall is already compact.
+        try:
+            from strix.compress import compress_deterministic as _strix_light
+        except ImportError:
+            _strix_light = None
+
         entity_snippets = [
-            (entity, _find_entity_snippet(prompt, entity, config=config))
+            (entity, _strix_light(snippet) if _strix_light else snippet)
             for entity in entities
+            for snippet in [_find_entity_snippet(prompt, entity, config=config)]
         ]
 
         from collections import defaultdict
@@ -177,6 +185,7 @@ def main():
             for entity in group:
                 deduped.append((entity, snippet))
 
+        _comp_level = "light" if _strix_light else "none"
         for entity, snippet in deduped:
             write_mention(
                 conn,
@@ -186,10 +195,11 @@ def main():
                 raw_text=prompt[:100],
                 context_snippet=snippet,
                 source="hook",
+                compression_level=_comp_level,
             )
 
         recalls = get_unsurfaced(conn, session_id)
-        output = format_recall(recalls, conn=conn, config=config)
+        output = format_recall(recalls, conn=conn, config=config, current_entities=entities)
 
         if output:
             surfaced_entities = []

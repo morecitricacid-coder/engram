@@ -13,7 +13,27 @@ MAX_SESSIONS_PER_ENTITY = 5
 MAX_ENTITIES_PER_RECALL = 5
 
 
-def _score_entity(conn, entity, session_count):
+def _cooccurrence_score(conn, entity, current_entities):
+    """Bonus for entities that frequently co-occur with currently-mentioned entities."""
+    if not current_entities:
+        return 0.0
+    others = [e for e in current_entities if e != entity]
+    if not others:
+        return 0.0
+    placeholders = ",".join("?" * len(others))
+    row = conn.execute(
+        f"SELECT COUNT(DISTINCT m1.session_id) "
+        f"FROM mentions m1 JOIN mentions m2 ON m1.session_id=m2.session_id "
+        f"WHERE m1.entity=? AND m2.entity IN ({placeholders})",
+        (entity, *others)
+    ).fetchone()
+    shared = row[0] if row else 0
+    if shared == 0:
+        return 0.0
+    return min(math.log2(shared + 1) * 0.5, 1.5)
+
+
+def _score_entity(conn, entity, session_count, current_entities=None):
     row = conn.execute("SELECT MAX(ts) FROM mentions WHERE entity = ?", (entity,)).fetchone()
     if row and row[0]:
         try: days_ago = (datetime.now() - datetime.fromisoformat(row[0])).total_seconds() / 86400
@@ -25,7 +45,8 @@ def _score_entity(conn, entity, session_count):
     explicit = (fb[0] if fb else 0) * 0.5
     imp = conn.execute("SELECT COALESCE(SUM(score),0) FROM recall_feedback WHERE entity=? AND source='implicit'", (entity,)).fetchone()
     implicit = min((imp[0] if imp else 0) * 0.1, 0.3)
-    return recency + frequency + explicit + implicit
+    cooccurrence = _cooccurrence_score(conn, entity, current_entities)
+    return recency + frequency + explicit + implicit + cooccurrence
 
 
 def _parse_recall_text(recall_text):
@@ -40,7 +61,7 @@ def _parse_recall_text(recall_text):
     return entity, snippets
 
 
-def format_recall(recall_texts, conn=None, config=None):
+def format_recall(recall_texts, conn=None, config=None, current_entities=None):
     max_entities = MAX_ENTITIES_PER_RECALL
     max_sessions = MAX_SESSIONS_PER_ENTITY
     if config:
@@ -63,7 +84,7 @@ def format_recall(recall_texts, conn=None, config=None):
         entities[entity] = unique
 
     if conn:
-        scored = sorted([((_score_entity(conn, e, len(s)), e, s)) for e, s in entities.items()], key=lambda x: -x[0])[:max_entities]
+        scored = sorted([((_score_entity(conn, e, len(s), current_entities), e, s)) for e, s in entities.items()], key=lambda x: -x[0])[:max_entities]
     else:
         scored = [(0, e, s) for e, s in entities.items()][:max_entities]
 

@@ -44,11 +44,11 @@ def ensure_session(conn: sqlite3.Connection, session_id: str, model: str = None)
     conn.commit()
 
 
-def write_mention(conn, session_id, speaker, entity, raw_text=None, context_snippet=None, source="hook"):
+def write_mention(conn, session_id, speaker, entity, raw_text=None, context_snippet=None, source="hook", compression_level="none"):
     try:
         conn.execute(
-            "INSERT INTO mentions (session_id, speaker, entity, raw_text, context_snippet, source) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, speaker, entity, raw_text, context_snippet, source))
+            "INSERT INTO mentions (session_id, speaker, entity, raw_text, context_snippet, source, compression_level) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, speaker, entity, raw_text, context_snippet, source, compression_level))
         conn.commit()
     except sqlite3.IntegrityError:
         pass

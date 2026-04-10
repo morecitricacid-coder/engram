@@ -32,6 +32,49 @@ def _build_alias_map(config: dict) -> dict[str, str]:
     return alias_map
 
 
+def _levenshtein(s1, s2):
+    """Levenshtein edit distance (no external deps)."""
+    if len(s1) < len(s2): return _levenshtein(s2, s1)
+    if len(s2) == 0: return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        for j, c2 in enumerate(s2):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+        prev = curr
+    return prev[-1]
+
+
+def _fuzzy_match(entity, config):
+    """Match a Haiku-extracted entity to nearest known entity within edit distance.
+
+    Threshold: 1 for 4-5 char entities, 2 for 6+ chars. Under 4 chars: skip.
+    """
+    if len(entity) < 4:
+        return entity
+    max_dist = 1 if len(entity) <= 5 else 2
+
+    alias_map = _build_alias_map(config)
+    candidates = {}
+    for e in config.get("known_entities", []):
+        if not e.startswith("_comment"):
+            el = e.lower()
+            candidates[el] = alias_map.get(el, el)
+    for alias, canonical in alias_map.items():
+        candidates[alias] = canonical
+
+    best_canonical = None
+    best_dist = max_dist + 1
+    for candidate, canonical in candidates.items():
+        if abs(len(entity) - len(candidate)) > max_dist:
+            continue
+        d = _levenshtein(entity, candidate)
+        if 0 < d < best_dist:
+            best_dist = d
+            best_canonical = canonical
+    return best_canonical if best_canonical else entity
+
+
 def _regex_extract(text: str, config: dict) -> set[str]:
     text_lower = text.lower()
     found = set()
@@ -105,7 +148,10 @@ def extract_entities(text: str, config: dict = None) -> list[str]:
         haiku_entities = _haiku_extract(text, config)
         alias_map = _build_alias_map(config)
         for entity in haiku_entities:
-            entities.add(alias_map.get(entity, entity))
+            resolved = alias_map.get(entity)
+            if not resolved:
+                resolved = _fuzzy_match(entity, config)
+            entities.add(resolved)
     negative = set(config.get("negative_entities", []))
     entities = {e for e in entities if e not in negative}
     max_entities = config.get("parser", {}).get("max_entities_per_message", 8)

@@ -235,6 +235,19 @@ def cmd_define(args):
             print(f"    {entity:25s}  {defn[:80]}")
 
 
+def cmd_densify(args):
+    from .densify import densify
+    densify(dry_run=args.dry_run, limit=args.limit, light_only=args.light, batch_size=args.batch_size)
+
+
+def cmd_archive(args):
+    from .archive import archive_sessions, read_archive
+    if args.read:
+        read_archive(args.read)
+    else:
+        archive_sessions(dry_run=args.dry_run, limit=args.limit)
+
+
 def cmd_feedback(args):
     conn = get_conn()
     rows = conn.execute(
@@ -263,11 +276,21 @@ def main():
     p.add_argument("--auto", action="store_true", help="Auto-generate definitions using Haiku")
     p.add_argument("--min-sessions", type=int, default=3, dest="min_sessions", help="Min sessions for --auto (default 3)")
     p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Print proposals without writing")
+    p = sub.add_parser("densify", help="Compress stored snippets with Strix")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Show what would be compressed")
+    p.add_argument("--limit", type=int, help="Max unique snippets to process")
+    p.add_argument("--light", action="store_true", help="Deterministic only (no LLM, instant)")
+    p.add_argument("--batch-size", type=int, default=20, dest="batch_size", help="Snippets per LLM call")
+    p = sub.add_parser("archive", help="Compress conversation transcripts for deep recall")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Show what would be archived")
+    p.add_argument("--limit", type=int, help="Max sessions to archive")
+    p.add_argument("--read", metavar="SESSION_ID", help="Read a compressed archive")
     args = parser.parse_args()
     if not args.command: parser.print_help(); return
     {"search": cmd_search, "entity": cmd_entity, "sessions": cmd_sessions,
      "recent": cmd_recent, "stats": cmd_stats, "graph": cmd_graph,
-     "feedback": cmd_feedback, "define": cmd_define}[args.command](args)
+     "feedback": cmd_feedback, "define": cmd_define, "densify": cmd_densify,
+     "archive": cmd_archive}[args.command](args)
 
 
 if __name__ == "__main__":

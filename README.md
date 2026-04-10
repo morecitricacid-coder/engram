@@ -7,7 +7,7 @@
 *One shared brain across every model.*
 
 [![Python](https://img.shields.io/badge/python-3.10+-a855f7?style=flat-square&logo=python&logoColor=white&labelColor=0d1117)](https://python.org)
-[![Version](https://img.shields.io/badge/version-v0.1.0-a855f7?style=flat-square&labelColor=0d1117)](https://github.com/morecitricacid-coder/engram/releases)
+[![Version](https://img.shields.io/badge/version-v0.2.0-a855f7?style=flat-square&labelColor=0d1117)](https://github.com/morecitricacid-coder/engram/releases)
 [![Dependencies](https://img.shields.io/badge/dependencies-none-22d3ee?style=flat-square&labelColor=0d1117)]()
 [![Cost](https://img.shields.io/badge/cost-%7E%243%2Fyear-22d3ee?style=flat-square&labelColor=0d1117)]()
 [![License](https://img.shields.io/badge/license-MIT-a855f7?style=flat-square&labelColor=0d1117)](LICENSE)
@@ -71,21 +71,59 @@ A new model's first session inherits the full entity history from every prior se
 |-------|--------|------|---------|
 | Stage 1 | Regex on `known_entities` + `aliases` in config | $0 | Your configured vocabulary |
 | Stage 2 | Haiku API (optional) | ~$3/year | Abstract topics regex can't anticipate |
+| Stage 3 | Fuzzy match (Levenshtein) on Haiku results | $0 | Typos in LLM extraction |
 
 ### Scoring
 
 Not everything surfaces. Engram ranks by relevance:
 
 ```
-score = recency + frequency + explicit_feedback + implicit_feedback
+score = recency + frequency + explicit + implicit + cooccurrence
 
-recency           = 1 / (days_ago + 1)
-frequency         = log₂(sessions + 1)
-explicit_feedback = Σ(score) × 0.5   (/recall good → +1, /recall miss → -1)
-implicit_feedback = Σ(score) × 0.1   (capped at 0.3, 3-message window)
+recency       = 1 / (days_ago + 1)
+frequency     = log₂(sessions + 1)
+explicit      = Σ(score) × 0.5       (/recall good → +1, /recall miss → -1)
+implicit      = Σ(score) × 0.1       (capped at 0.3, 3-message window)
+cooccurrence  = log₂(shared + 1) × 0.5  (capped at 1.5, associative boost)
 ```
 
+**Co-occurrence scoring** makes recall associative: if you mention "deployment" and "redis" frequently appears alongside it, "redis" gets a ranking boost even when not mentioned directly. The system learns which concepts travel together.
+
 Max 5 entities per recall. Max 5 sessions per entity. Configurable.
+
+### Fuzzy Entity Matching
+
+LLM entity extraction sometimes introduces typos. Engram auto-corrects using Levenshtein distance against your configured vocabulary:
+
+```
+Haiku extracts: "deploymnet"  →  fuzzy match  →  "deployment" (distance 2)
+Haiku extracts: "reddis"      →  fuzzy match  →  "redis" (distance 1)
+```
+
+Threshold scales by word length: 1 edit for 4-5 char entities, 2 edits for 6+ chars. Under 4 chars: no fuzzy matching (too risky). Zero external dependencies — pure Python implementation.
+
+### Entity Definitions
+
+Give your entities ground-truth definitions so every recall includes not just *when* you discussed something, but *what it is*:
+
+```json
+{
+  "definitions": {
+    "fenix": "Real-time data ingestion pipeline with streaming and batch modes",
+    "worker-pool": "Go-based task queue with Redis backing, handles async jobs"
+  }
+}
+```
+
+Definitions appear in recall output as `[def: ...]` lines — the model gets domain context before responding.
+
+Auto-generate definitions from accumulated conversation snippets:
+
+```bash
+python3 -m engram.cli define --auto              # Generate for all frequent entities
+python3 -m engram.cli define --auto --dry-run     # Preview without writing
+python3 -m engram.cli define fenix "My pipeline"  # Set manually
+```
 
 ---
 
@@ -141,13 +179,16 @@ echo "YOUR-API-KEY" > ~/.engram/api-key
 ## CLI
 
 ```bash
-python3 -m engram.cli stats          # Overview
+python3 -m engram.cli stats              # Overview
 python3 -m engram.cli search myproject   # Search entities and snippets
 python3 -m engram.cli entity myproject   # Full detail on an entity
 python3 -m engram.cli recent             # Last 20 entities mentioned
 python3 -m engram.cli graph myproject    # What gets mentioned alongside it
-python3 -m engram.cli sessions       # All sessions (any model)
-python3 -m engram.cli feedback       # Recall feedback history
+python3 -m engram.cli sessions           # All sessions (any model)
+python3 -m engram.cli feedback           # Recall feedback history
+python3 -m engram.cli define --auto      # Auto-generate entity definitions
+python3 -m engram.cli densify            # Compress stored snippets (requires Strix)
+python3 -m engram.cli archive            # Archive full conversations (requires Strix)
 ```
 
 ```
@@ -195,7 +236,8 @@ engram/hook.py receives message via stdin JSON  [15s hard timeout]
        ↓
 engram/parser.py extracts entities
   ├── Stage 1: regex on known_entities + aliases
-  └── Stage 2: Haiku API (optional)
+  ├── Stage 2: Haiku API (optional)
+  └── Stage 3: fuzzy match typos → canonical (Levenshtein)
        ↓
 engram/db.py writes mentions → SQLite WAL
        ↓
@@ -203,7 +245,7 @@ SQL trigger fires automatically:
   ├── links new mention to prior sessions
   └── populates surface_queue
        ↓
-engram/surfacer.py scores entities + formats recall block
+engram/surfacer.py scores entities (recency + frequency + feedback + co-occurrence)
        ↓
 [MEMORY RECALL] printed to stdout → injected into context
 ```
@@ -221,7 +263,7 @@ sessions ──< mentions ──< connections
 | Table | Contents |
 |-------|---------|
 | `sessions` | One row per conversation (any model) |
-| `mentions` | Every entity extraction with context snippet |
+| `mentions` | Every entity extraction with context snippet + compression level |
 | `connections` | Cross-session entity links (trigger-populated) |
 | `surface_queue` | What gets injected (trigger-populated) |
 | `recall_feedback` | Explicit + implicit scoring signals |
@@ -267,6 +309,7 @@ Schema versioning via migrations. Applies automatically on startup. Never breaks
   "negative_entities": ["thinking", "question", "thing", "..."],
   "known_entities":    ["fenix", "worker-pool", "my-tool"],
   "aliases":           { "fenix": ["the pipeline"] },
+  "definitions":       { "fenix": "Real-time data ingestion pipeline" },
   "s1_links":          { "fenix": "docs/fenix.md" }
 }
 ```
@@ -279,6 +322,7 @@ Schema versioning via migrations. Applies automatically on startup. Never breaks
 | `negative_entities` | Words to never extract (too generic) |
 | `known_entities` | Your project vocabulary (regex matches these) |
 | `aliases` | Alternative names → canonical entity |
+| `definitions` | Entity definitions injected into recall as `[def: ...]` |
 | `s1_links` | Cross-references to documentation files |
 
 ---
@@ -295,9 +339,14 @@ Schema versioning via migrations. Applies automatically on startup. Never breaks
 
 ## Relationship to Strix
 
-Engram is the memory layer. [Strix](https://github.com/morecitricacid-coder/strix) is an experimental compression language that sits on top — it compresses recalled conversations using a grammar that exploits the model's training data as the dictionary. Engram resolves the private vocabulary that Strix notation contains.
+Engram is the memory layer. [Strix](https://github.com/morecitricacid-coder/strix) is an optional compression layer that sits on top.
 
-Engram works perfectly without Strix. Strix uses Engram for vocabulary resolution.
+When Strix is installed, Engram gains:
+- **Light compression** — snippets are stored pre-compressed at write time (deterministic, <1ms, no LLM)
+- **`densify` command** — background batch compression of existing snippets
+- **`archive` command** — full conversation transcripts compressed for deep recall
+
+Engram works perfectly without Strix. All compression features are optional imports that degrade gracefully.
 
 ---
 
