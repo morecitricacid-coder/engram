@@ -40,7 +40,7 @@ def _score_entity(conn, entity, session_count, current_entities=None):
         except: days_ago = 30
     else: days_ago = 30
     recency = 1.0 / (days_ago + 1)
-    frequency = math.log2(session_count + 1)
+    frequency = min(math.log2(session_count + 1), 3.5)
     fb = conn.execute("SELECT COALESCE(SUM(score),0) FROM recall_feedback WHERE entity=? AND source='explicit'", (entity,)).fetchone()
     explicit = (fb[0] if fb else 0) * 0.5
     imp = conn.execute("SELECT COALESCE(SUM(score),0) FROM recall_feedback WHERE entity=? AND source='implicit'", (entity,)).fetchone()

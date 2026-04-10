@@ -109,7 +109,6 @@ def cmd_stats(args):
     sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     mentions = conn.execute("SELECT COUNT(*) FROM mentions").fetchone()[0]
     unique = conn.execute("SELECT COUNT(DISTINCT entity) FROM mentions").fetchone()[0]
-    connections = conn.execute("SELECT COUNT(*) FROM connections").fetchone()[0]
     feedback = conn.execute("SELECT COUNT(*) FROM recall_feedback").fetchone()[0]
     surfaced = conn.execute("SELECT COUNT(*) FROM surface_queue WHERE surfaced=1").fetchone()[0]
     size_kb = os.path.getsize(db_path) / 1024 if os.path.exists(db_path) else 0
@@ -120,7 +119,6 @@ def cmd_stats(args):
     print(f"  Sessions:        {sessions}")
     print(f"  Mentions:        {mentions}")
     print(f"  Unique entities: {unique}")
-    print(f"  Connections:     {connections}")
     print(f"  Feedback entries:{feedback}")
     print(f"  Recalls served:  {surfaced}")
     print(f"  DB size:         {size_kb:.1f} KB")
