@@ -140,6 +140,21 @@ Message: {text[:500]}"""
     return set()
 
 
+def _normalize_from_db(entity: str, config: dict) -> str:
+    """Check entity_aliases table for a canonical mapping (P2 normalization)."""
+    import sqlite3
+    db_path = os.path.expanduser(config.get("db_path", "~/.engram/memory.db"))
+    if not os.path.exists(db_path):
+        return entity
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1)
+        row = conn.execute("SELECT canonical FROM entity_aliases WHERE alias=? LIMIT 1", (entity,)).fetchone()
+        conn.close()
+        return row[0] if row else entity
+    except Exception:
+        return entity
+
+
 def extract_entities(text: str, config: dict = None) -> list[str]:
     if config is None: config = _load_config()
     entities = _regex_extract(text, config)
@@ -151,6 +166,8 @@ def extract_entities(text: str, config: dict = None) -> list[str]:
             resolved = alias_map.get(entity)
             if not resolved:
                 resolved = _fuzzy_match(entity, config)
+            # P2: Check DB normalization table for canonical mapping
+            resolved = _normalize_from_db(resolved, config)
             entities.add(resolved)
     negative = set(config.get("negative_entities", []))
     entities = {e for e in entities if e not in negative}

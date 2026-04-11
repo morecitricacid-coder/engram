@@ -46,8 +46,9 @@ def cmd_search(args):
         "SELECT entity, COUNT(*) as mentions, COUNT(DISTINCT session_id) as sessions "
         "FROM mentions WHERE entity LIKE ? GROUP BY entity ORDER BY mentions DESC", (query,)).fetchall()
     snippets = conn.execute(
-        "SELECT entity, session_id, substr(context_snippet,1,120), ts "
-        "FROM mentions WHERE context_snippet LIKE ? ORDER BY ts DESC LIMIT 10", (query,)).fetchall()
+        "SELECT m.entity, m.session_id, substr(COALESCE(ss.content, m.context_snippet),1,120), m.ts "
+        "FROM mentions m LEFT JOIN snippet_store ss ON ss.hash = m.snippet_id "
+        "WHERE COALESCE(ss.content, m.context_snippet) LIKE ? ORDER BY m.ts DESC LIMIT 10", (query,)).fetchall()
     if entities:
         print(f"  Entities matching '{args.query}':")
         for e, m, s in entities: print(f"    {e:30s}  {m} mentions, {s} sessions")
@@ -70,7 +71,9 @@ def cmd_entity(args):
     print(f"  Feedback score: {feedback:+d}\n")
     rows = conn.execute(
         "SELECT session_id, MIN(ts), MAX(ts), COUNT(*), "
-        "(SELECT context_snippet FROM mentions m2 WHERE m2.session_id=m.session_id AND m2.entity=? ORDER BY ts ASC LIMIT 1) "
+        "(SELECT COALESCE(ss.content, m2.context_snippet) FROM mentions m2 "
+        " LEFT JOIN snippet_store ss ON ss.hash = m2.snippet_id "
+        " WHERE m2.session_id=m.session_id AND m2.entity=? ORDER BY m2.ts ASC LIMIT 1) "
         "FROM mentions m WHERE entity=? GROUP BY session_id ORDER BY MIN(ts) DESC", (entity, entity)).fetchall()
     print("  Sessions:")
     for sid, first, last, cnt, snippet in rows:
@@ -185,10 +188,11 @@ def cmd_define(args):
         conn = get_conn()
         min_sessions = args.min_sessions or 3
         rows = conn.execute(
-            "SELECT entity, COUNT(DISTINCT session_id) as sessions, "
-            "GROUP_CONCAT(context_snippet, ' | ') as snippets "
-            "FROM mentions WHERE context_snippet IS NOT NULL "
-            "GROUP BY entity HAVING sessions >= ? ORDER BY sessions DESC",
+            "SELECT m.entity, COUNT(DISTINCT m.session_id) as sessions, "
+            "GROUP_CONCAT(COALESCE(ss.content, m.context_snippet), ' | ') as snippets "
+            "FROM mentions m LEFT JOIN snippet_store ss ON ss.hash = m.snippet_id "
+            "WHERE m.snippet_id IS NOT NULL OR m.context_snippet IS NOT NULL "
+            "GROUP BY m.entity HAVING sessions >= ? ORDER BY sessions DESC",
             (min_sessions,)).fetchall()
         conn.close()
         candidates = [(e, s, snip) for e, s, snip in rows if e not in definitions]
@@ -233,6 +237,30 @@ def cmd_define(args):
             print(f"    {entity:25s}  {defn[:80]}")
 
 
+def cmd_vacuum(args):
+    config = _get_config()
+    db_path = os.path.expanduser(config.get("db_path", "~/.engram/memory.db"))
+    if not os.path.exists(db_path):
+        print(f"  Database not found at {db_path}")
+        return
+    size_before = os.path.getsize(db_path)
+    print(f"  DB size before: {size_before/1024/1024:.1f} MB")
+    print(f"  Running VACUUM (activates auto_vacuum=INCREMENTAL)...")
+    # VACUUM cannot run inside a transaction — use isolation_level=None
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    conn.execute("VACUUM")
+    conn.close()
+    size_after = os.path.getsize(db_path)
+    saved = size_before - size_after
+    print(f"  DB size after:  {size_after/1024/1024:.1f} MB")
+    if saved > 0:
+        print(f"  Reclaimed:      {saved/1024:.0f} KB")
+    else:
+        print(f"  No space reclaimed (DB is already compact)")
+    print(f"  auto_vacuum=INCREMENTAL active — future growth managed automatically")
+
+
 def cmd_densify(args):
     from .densify import densify
     densify(dry_run=args.dry_run, limit=args.limit, light_only=args.light, batch_size=args.batch_size)
@@ -244,6 +272,83 @@ def cmd_archive(args):
         read_archive(args.read)
     else:
         archive_sessions(dry_run=args.dry_run, limit=args.limit)
+
+
+def cmd_normalize(args):
+    """P2: Find and merge duplicate entities."""
+    config = _get_config()
+    db_path = os.path.expanduser(config.get("db_path", "~/.engram/memory.db"))
+
+    from .normalize import find_merge_candidates, apply_normalizations
+
+    min_sessions = args.min_sessions or 2
+    threshold = args.threshold or 0.8
+
+    print(f"  Scanning for merge candidates (string_sim>{threshold}, min_sessions={min_sessions})...")
+    merges = find_merge_candidates(
+        db_path, min_sessions=min_sessions, string_thresh=threshold,
+        max_cluster_size=args.max_cluster or 10
+    )
+
+    if not merges:
+        print("  No merge candidates found.")
+        return
+
+    print(f"\n  Found {len(merges)} merge candidates:\n")
+    for canonical, alias, sim, jaccard in merges:
+        j_str = f", jaccard={jaccard:.2f}" if jaccard >= 0 else ""
+        print(f"    {alias:40s} → {canonical:30s}  (sim={sim:.2f}{j_str})")
+
+    if args.dry_run:
+        print(f"\n  (dry run — rerun without --dry-run to apply)")
+        return
+
+    count = apply_normalizations(db_path, merges, rewrite_mentions=args.rewrite)
+    print(f"\n  Applied {count} normalizations to entity_aliases table")
+    if args.rewrite:
+        print(f"  Also rewrote existing mentions to canonical names")
+
+
+def cmd_prefetch(args):
+    """P1: Build/inspect predictive prefetch transition table."""
+    conn = get_conn()
+
+    if args.build:
+        from .db import rebuild_transition_probs
+        min_sessions = args.min_sessions or 3
+        print(f"  Building transition probabilities (min_sessions={min_sessions})...")
+        count = rebuild_transition_probs(conn, min_entity_sessions=min_sessions)
+        print(f"  Stored {count} transitions in transition_probs table")
+
+    elif args.predict:
+        from .db import get_prefetch_predictions
+        entities = [e.strip().lower() for e in args.predict.split(",")]
+        predictions = get_prefetch_predictions(conn, entities, min_score=0.1, max_results=10)
+        if not predictions:
+            print(f"  No predictions for: {entities}")
+            print(f"  (Run 'engram prefetch --build' first if table is empty)")
+        else:
+            print(f"  Predictions given [{', '.join(entities)}]:\n")
+            for entity, score, evidence in predictions:
+                print(f"    {entity:40s}  score={score:.3f}  ({evidence} shared sessions)")
+
+    else:
+        # Show table stats
+        row = conn.execute("SELECT COUNT(*) FROM transition_probs").fetchone()
+        total = row[0] if row else 0
+        if total == 0:
+            print("  Transition table is empty. Run: engram prefetch --build")
+        else:
+            print(f"  Transition table: {total} entries")
+            top = conn.execute(
+                "SELECT from_entity, to_entity, probability, shared_sessions "
+                "FROM transition_probs ORDER BY probability DESC LIMIT 15"
+            ).fetchall()
+            print(f"\n  Top transitions:")
+            for f, t, p, s in top:
+                print(f"    {f:30s} → {t:30s}  P={p:.3f} ({s} sessions)")
+
+    conn.close()
 
 
 def cmd_feedback(args):
@@ -274,6 +379,17 @@ def main():
     p.add_argument("--auto", action="store_true", help="Auto-generate definitions using Haiku")
     p.add_argument("--min-sessions", type=int, default=3, dest="min_sessions", help="Min sessions for --auto (default 3)")
     p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Print proposals without writing")
+    p = sub.add_parser("normalize", help="P2: Find and merge duplicate entities")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Show proposals without applying")
+    p.add_argument("--threshold", type=float, default=0.8, help="String similarity threshold (default 0.8)")
+    p.add_argument("--min-sessions", type=int, default=2, dest="min_sessions", help="Min sessions per entity")
+    p.add_argument("--max-cluster", type=int, default=10, dest="max_cluster", help="Max entities per cluster")
+    p.add_argument("--rewrite", action="store_true", help="Also rewrite existing mentions to canonical names")
+    p = sub.add_parser("prefetch", help="P1: Build/inspect predictive prefetch")
+    p.add_argument("--build", action="store_true", help="Rebuild transition probability table")
+    p.add_argument("--predict", metavar="ENTITIES", help="Predict next entities (comma-separated)")
+    p.add_argument("--min-sessions", type=int, default=3, dest="min_sessions", help="Min sessions for transition calc")
+    sub.add_parser("vacuum", help="Reclaim unused DB space + enable incremental auto-vacuum")
     p = sub.add_parser("densify", help="Compress stored snippets with Strix")
     p.add_argument("--dry-run", action="store_true", dest="dry_run", help="Show what would be compressed")
     p.add_argument("--limit", type=int, help="Max unique snippets to process")
@@ -288,7 +404,8 @@ def main():
     {"search": cmd_search, "entity": cmd_entity, "sessions": cmd_sessions,
      "recent": cmd_recent, "stats": cmd_stats, "graph": cmd_graph,
      "feedback": cmd_feedback, "define": cmd_define, "densify": cmd_densify,
-     "archive": cmd_archive}[args.command](args)
+     "archive": cmd_archive, "vacuum": cmd_vacuum,
+     "normalize": cmd_normalize, "prefetch": cmd_prefetch}[args.command](args)
 
 
 if __name__ == "__main__":

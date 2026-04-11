@@ -136,9 +136,10 @@ def main():
 
         from db import (init_db, ensure_session, write_mention, get_unsurfaced,
                         get_last_surfaced, update_last_surfaced,
-                        increment_surfaced_message_index, write_feedback)
+                        increment_surfaced_message_index, write_feedback,
+                        is_duplicate_snippet, get_prefetch_predictions)
         from parser import extract_entities
-        from surfacer import format_recall
+        from surfacer import format_recall, format_prefetch
 
         conn = init_db(config)
         model = os.environ.get("CLAUDE_MODEL", None)
@@ -187,8 +188,14 @@ def main():
             for entity in group:
                 deduped.append((entity, snippet))
 
+        # P0: Skip duplicate snippets — if this entity already has a near-identical
+        # snippet stored, don't write another copy. Cuts ~64% of redundant writes.
         _comp_level = "light" if _strix_light else "none"
+        _dedup_skipped = 0
         for entity, snippet in deduped:
+            if is_duplicate_snippet(conn, entity, snippet):
+                _dedup_skipped += 1
+                continue
             write_mention(
                 conn,
                 session_id=session_id,
@@ -210,6 +217,20 @@ def main():
                     surfaced_entities.append(line.split('"')[1])
             if surfaced_entities:
                 update_last_surfaced(conn, session_id, surfaced_entities)
+
+        # --- P1: Predictive prefetch — surface high-confidence predictions ---
+        try:
+            prefetch_min_score = config.get("prefetch", {}).get("min_score", 0.25)
+            prefetch_max = config.get("prefetch", {}).get("max_predictions", 3)
+            predictions = get_prefetch_predictions(
+                conn, entities, min_score=prefetch_min_score, max_results=prefetch_max
+            )
+            if predictions:
+                prefetch_block = format_prefetch(predictions, conn=conn, config=config)
+                if prefetch_block:
+                    output = f"{output}\n{prefetch_block}" if output else prefetch_block
+        except Exception:
+            pass  # transition_probs table may not exist yet
 
         # --- Limen: Rule content injection ---
         rule_triggers = config.get("rule_triggers", {})

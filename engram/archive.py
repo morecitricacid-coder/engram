@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 try:
-    from strix.compress import compress_deterministic, _call_llm, _sanitize_v11, _post_compress
+    from strix.compress import compress_deterministic, _sanitize_v11, _post_compress
     STRIX_AVAILABLE = True
 except ImportError:
     STRIX_AVAILABLE = False
@@ -74,7 +74,61 @@ def extract_messages(jsonl_path: str) -> list[tuple[str, str]]:
     return messages
 
 
-def _compress_conversation_batch(messages: list[tuple[str, str]], batch_size: int = 3000) -> str:
+def _haiku_compress(text: str, config: dict) -> str | None:
+    """Compress text via direct Haiku API call (curl).
+
+    Bypasses _call_llm which relies on `claude -p` subprocess and fails
+    silently when invoked outside an active Claude Code session.
+    """
+    import subprocess
+
+    key_file = os.path.expanduser(config.get("api_key_file", "~/.engram/api-key"))
+    api_key = None
+    if os.path.exists(key_file):
+        api_key = open(key_file).read().strip()
+    if not api_key:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+
+    model = config.get("parser", {}).get("haiku_model", "claude-haiku-4-5-20251001")
+    system = (
+        "Compress this conversation archive into terse notation. "
+        "Keep [U] [A] markers. Drop articles/copulas/filler/pronouns. "
+        "Use -> (causation), :: (types), | (alternatives), ~ (approx). "
+        "Abbreviate common terms: vuln, env, config, auth, fn, conn, impl, app. "
+        "Preserve entity names, file paths, commands, error messages, facts, decisions. "
+        "Output ONLY the compressed text, no preamble."
+    )
+    # Budget: allow up to 80% of input length in tokens, capped at 4096
+    max_tokens = min(int(len(text) / 4 * 0.8), 4096)
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": max(max_tokens, 256),
+        "system": system,
+        "messages": [{"role": "user", "content": f"Compress:\n\n{text}"}],
+    })
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "--max-time", "30",
+             "-H", "Content-Type: application/json",
+             "-H", f"x-api-key: {api_key}",
+             "-H", "anthropic-version: 2023-06-01",
+             "-d", payload,
+             "https://api.anthropic.com/v1/messages"],
+            capture_output=True, text=True, timeout=32)
+        if result.returncode != 0:
+            return None
+        response = json.loads(result.stdout)
+        if response.get("type") == "error":
+            return None
+        compressed = response.get("content", [{}])[0].get("text", "").strip()
+        return compressed or None
+    except Exception:
+        return None
+
+
+def _compress_conversation_batch(messages: list[tuple[str, str]], batch_size: int = 3000, config: dict | None = None) -> str:
     """Compress a conversation into dense Strix notation.
 
     Chunks messages into ~batch_size char groups, compresses each chunk
@@ -93,7 +147,7 @@ def _compress_conversation_batch(messages: list[tuple[str, str]], batch_size: in
 
     # For short conversations, compress in one shot
     if len(full_text) < batch_size * 2:
-        return _compress_chunk(full_text)
+        return _compress_chunk(full_text, config)
 
     # Chunk by message boundaries (don't split mid-message)
     chunks = []
@@ -113,41 +167,36 @@ def _compress_conversation_batch(messages: list[tuple[str, str]], batch_size: in
     # Compress each chunk
     compressed_chunks = []
     for chunk in chunks:
-        compressed_chunks.append(_compress_chunk(chunk))
+        compressed_chunks.append(_compress_chunk(chunk, config))
 
     return "\n---\n".join(compressed_chunks)
 
 
-def _compress_chunk(text: str) -> str:
-    """Compress a single conversation chunk."""
-    # Always apply deterministic first
-    light = compress_deterministic(text)
+def _compress_chunk(text: str, config: dict | None = None) -> str:
+    """Compress a single conversation chunk.
 
-    if not STRIX_AVAILABLE:
+    Applies deterministic compression first, then direct Haiku API for LLM
+    compression. Strix _call_llm is not used — it relies on `claude -p`
+    subprocess which fails silently outside an active Claude Code session.
+    """
+    light = compress_deterministic(text) if STRIX_AVAILABLE else text
+
+    if not config:
         return light
 
-    system = """Compress this conversation archive into terse Strix notation.
+    result = _haiku_compress(light, config)
+    if result and len(result) < len(light):
+        # Apply Strix post-processing if available
+        if STRIX_AVAILABLE:
+            try:
+                result = _sanitize_v11(result)
+                result = _post_compress(result)
+            except Exception:
+                pass
+        if len(result) < len(light):
+            return result
 
-RULES:
-- Keep [U] and [A] message markers
-- Drop: articles, copulas, filler, pronouns, pleasantries
-- Use: -> for causation, :: for types, | for alternatives, ~ for approx
-- Abbreviate: vuln, env, config, auth, fn, conn, inst, app
-- "$X per month" -> "$X/mo"
-- Keep entity names, file paths, commands, error messages intact
-- Keep ALL facts and decisions — remove only grammatical filler
-- Output ONLY the compressed text"""
-
-    try:
-        result = _call_llm(f"Compress this conversation:\n\n{light}", system=system, timeout=120)
-        result = _sanitize_v11(result)
-        result = _post_compress(result)
-        # Expansion guard
-        if len(result) >= len(light):
-            return light
-        return result
-    except Exception:
-        return light
+    return light
 
 
 def archive_sessions(config=None, dry_run=False, limit=None):
@@ -213,7 +262,7 @@ def archive_sessions(config=None, dry_run=False, limit=None):
         original_chars = len(original)
 
         # Compress
-        compressed = _compress_conversation_batch(messages)
+        compressed = _compress_conversation_batch(messages, config=config)
         compressed_chars = len(compressed)
 
         # Store
